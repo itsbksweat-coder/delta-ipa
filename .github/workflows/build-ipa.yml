@@ -1,0 +1,61 @@
+name: Build Eternal IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack Eternal project
+        run: |
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          data = Path('EternalProject.zip.b64').read_text().strip()
+          Path('EternalProject.zip').write_bytes(base64.b64decode(data))
+          PY
+          unzip -q EternalProject.zip
+          test -f Eternal.xcodeproj/project.pbxproj
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build unsigned app
+        run: |
+          set -euo pipefail
+          rm -rf build Payload Eternal.ipa
+          xcodebuild \
+            -project Eternal.xcodeproj \
+            -target Eternal \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            SYMROOT="$PWD/build" \
+            clean build
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP="build/Release-iphoneos/Eternal.app"
+          test -d "$APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/Eternal.app
+          /usr/bin/zip -qry Eternal.ipa Payload
+          ls -lh Eternal.ipa
+
+      - name: Upload Eternal IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eternal-IPA
+          path: Eternal.ipa
+          if-no-files-found: error
