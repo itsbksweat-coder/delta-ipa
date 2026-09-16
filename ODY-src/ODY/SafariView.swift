@@ -2,11 +2,13 @@ import SwiftUI
 import WebKit
 
 /// Discord runs directly inside ODY as a persistent WKWebView.
-/// It only forwards visible Odyssey FARMER/PRO status text to the local dashboard.
-/// It never reads cookies, localStorage, passwords, or Discord tokens.
+/// The Discord website session is kept by WKWebsiteDataStore.default(), so it
+/// belongs to this app and can survive normal app closes/reopens.
+/// ODY never exports Discord cookies, passwords, localStorage, or user tokens.
 struct EmbeddedDiscordWebView: UIViewRepresentable {
-    private let guildID = "1422601105149264006"
-    private let channelID = "1487787555427455067"
+    private static let guildID = "1422601105149264006"
+    private static let channelID = "1487787555427455067"
+    private static let targetURL = URL(string: "https://discord.com/channels/\(guildID)/\(channelID)")!
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -14,6 +16,9 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+
+        // Persistent app-owned website storage. This is what keeps the Discord
+        // website signed in inside ODY without copying the session anywhere else.
         configuration.websiteDataStore = .default()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 
@@ -44,13 +49,12 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
             object: nil
         )
 
-        // Open the exact Odyssey Discord channel used by the original ODY watcher.
-        // If the persistent Discord session is not logged in yet, Discord redirects
-        // to its normal login page. After login it returns to the channel.
-        let url = URL(string: "https://discord.com/channels/\(guildID)/\(channelID)")!
+        // Go straight to the Odyssey channel. If Discord does not yet have a
+        // valid session in ODY, Discord itself redirects this same in-app view
+        // to its normal login/QR page. After login, ODY returns to the channel.
         webView.load(
             URLRequest(
-                url: url,
+                url: Self.targetURL,
                 cachePolicy: .useProtocolCachePolicy,
                 timeoutInterval: 60
             )
@@ -96,7 +100,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
         for (let i = 0; i < source.length; i++) {
           const line = source[i];
 
-          // Normal one-line tier header, e.g. "FARMER 2 / 4".
           const head = line.match(/\b(FARMER|PRO)\b[^\n]*?(\d+)\s*\/\s*(\d+)/i);
           if (head && !/expires?\s+in/i.test(line)) {
             tier = head[1].toUpperCase();
@@ -106,7 +109,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
             continue;
           }
 
-          // Discord sometimes lays the tier name and count out as separate text nodes.
           if (/^(FARMER|PRO)$/i.test(line)) {
             pendingTier = line.toUpperCase();
             continue;
@@ -124,7 +126,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
 
           if (!tier) continue;
 
-          // Exact row already in the parser's preferred form.
           const full = line.match(/^[\s>*_`-]*@?(.+?)\s*[-–—]\s*expires?\s+in\s+(.+?)\s*$/i);
           if (full) {
             out.push(`@${cleanLine(full[1]).replace(/^@/, "")} - expires in ${cleanLine(full[2])}`);
@@ -132,8 +133,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
             continue;
           }
 
-          // If Discord split the row into two nodes, pair the preceding visible
-          // name with a line containing only the expiry text.
           const expiry = line.match(/(?:^|[-–—]\s*)expires?\s+in\s+(.+?)\s*$/i);
           if (expiry && pendingName) {
             out.push(`@${pendingName.replace(/^@/, "")} - expires in ${cleanLine(expiry[1])}`);
@@ -141,7 +140,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
             continue;
           }
 
-          // Keep a likely slot label briefly. Ignore obvious Discord chrome.
           if (
             line.length <= 90 &&
             !/^(today|yesterday|edited|reply|more|add reaction)$/i.test(line) &&
@@ -180,7 +178,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
           }
         }
 
-        // Fallback for Discord DOM changes: only use the currently-rendered page text.
         if (!blocks.length && document.body) {
           const bodyText = String(document.body.innerText || "");
           if (/\b(FARMER|PRO)\b/i.test(bodyText) && /expires?\s+in/i.test(bodyText)) {
@@ -195,7 +192,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
           const blocks = candidateBlocks();
           let best = "";
 
-          // Newer Discord messages appear later in the DOM, so walk backward.
           for (let i = blocks.length - 1; i >= 0; i--) {
             const normalized = normalizeBlock(blocks[i]);
             if (!normalized) continue;
@@ -231,9 +227,50 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         weak var webView: WKWebView?
         private var lastStatus = ""
+        private var lastLoginState: Bool?
+        private var routedToTargetAfterLogin = false
 
         @objc func reloadDiscord() {
             webView?.reload()
+        }
+
+        private func publishLoginState(_ loggedIn: Bool) {
+            guard lastLoginState != loggedIn else { return }
+            lastLoginState = loggedIn
+            UserDefaults.standard.set(loggedIn, forKey: "ODYDiscordLoggedIn")
+
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .discordLoginStateUpdated,
+                    object: nil,
+                    userInfo: ["loggedIn": loggedIn]
+                )
+            }
+        }
+
+        private func updateDiscordState(for webView: WKWebView) {
+            guard let url = webView.url,
+                  let host = url.host?.lowercased(),
+                  host == "discord.com" || host.hasSuffix(".discord.com")
+            else { return }
+
+            let path = url.path.lowercased()
+
+            if path.hasPrefix("/login") || path.hasPrefix("/register") {
+                routedToTargetAfterLogin = false
+                publishLoginState(false)
+                return
+            }
+
+            if path.hasPrefix("/channels/") {
+                publishLoginState(true)
+
+                let targetPath = "/channels/\(EmbeddedDiscordWebView.guildID)/\(EmbeddedDiscordWebView.channelID)"
+                if path != targetPath.lowercased(), !routedToTargetAfterLogin {
+                    routedToTargetAfterLogin = true
+                    webView.load(URLRequest(url: EmbeddedDiscordWebView.targetURL))
+                }
+            }
         }
 
         func userContentController(
@@ -270,11 +307,18 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
             _ webView: WKWebView,
             didFinish navigation: WKNavigation!
         ) {
-            // Re-run the scanner after client-side Discord navigations as a fallback.
+            updateDiscordState(for: webView)
             webView.evaluateJavaScript(EmbeddedDiscordWebView.SelfScannerBootstrap.script, completionHandler: nil)
         }
 
-        // Keep links that request a new window inside this same embedded view.
+        func webView(
+            _ webView: WKWebView,
+            didFail navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            updateDiscordState(for: webView)
+        }
+
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
@@ -288,8 +332,6 @@ struct EmbeddedDiscordWebView: UIViewRepresentable {
         }
     }
 
-    /// Small fallback that triggers the already-installed scanner if Discord performs
-    /// a same-document/client-side navigation after the initial injection.
     private enum SelfScannerBootstrap {
         static let script = #"""
         try {
