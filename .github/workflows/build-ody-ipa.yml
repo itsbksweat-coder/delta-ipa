@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'ODY-iOS-project.zip.b64'
+      - 'ODY-src/**'
       - '.github/workflows/build-ody-ipa.yml'
 
 jobs:
@@ -13,23 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Decode ODY project
-        run: |
-          python3 - <<'PY'
-          import base64
-          from pathlib import Path
-          data = Path('ODY-iOS-project.zip.b64').read_text().strip()
-          Path('ODY-iOS-project.zip').write_bytes(base64.b64decode(data))
-          PY
-          rm -rf ody-src
-          mkdir -p ody-src
-          unzip -q ODY-iOS-project.zip -d ody-src
-
       - name: Build ODY app without signing
         run: |
           set -e
           xcodebuild \
-            -project ody-src/ODY-iOS/ODY.xcodeproj \
+            -project ODY-src/ODY.xcodeproj \
             -scheme ODY \
             -configuration Release \
             -sdk iphoneos \
