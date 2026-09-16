@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0710">
+<title>ODY Local Dashboard</title>
+<style>
+:root{
+  --bg:#0a0710; --panel:#130e1d; --panel2:#1b1429; --panel3:#231a35;
+  --line:#2e2145; --text:#ede9f7; --muted:#8b80a6; --dim:#5d5478;
+  --purple:#a855f7; --purple2:#7c3aed; --warn:#ffb43d; --danger:#ff4f6d;
+  --ok:#8b5cf6; --white:#fff;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif}
+body{padding:max(18px,env(safe-area-inset-top)) 16px max(28px,env(safe-area-inset-bottom))}
+.wrap{max-width:760px;margin:0 auto}
+.brand{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.logo{font-weight:900;font-size:29px;letter-spacing:-1px;color:white}
+.logo span{color:var(--purple)}
+.badge{font-size:12px;padding:7px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:var(--panel)}
+.card{background:linear-gradient(180deg,var(--panel),#0f0a18);border:1px solid var(--line);border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 14px 40px rgba(0,0,0,.28)}
+h2{font-size:15px;margin:0 0 12px;color:white}
+small,.hint{color:var(--muted);font-size:12px;line-height:1.45}
+textarea,input{width:100%;border:1px solid var(--line);background:#09060e;color:var(--text);border-radius:13px;padding:12px;font-size:15px;outline:none}
+textarea{min-height:155px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+textarea:focus,input:focus{border-color:var(--purple)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{appearance:none;border:0;border-radius:13px;padding:12px 14px;font-size:15px;font-weight:750;color:white;background:linear-gradient(135deg,var(--purple),var(--purple2));cursor:pointer}
+button.secondary{background:var(--panel3);border:1px solid var(--line);color:var(--text)}
+button.danger{background:#27101a;border:1px solid #512033;color:#ff98aa}
+button:active{transform:scale(.985)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tier{background:var(--panel2);border:1px solid var(--line);border-radius:15px;padding:14px}
+.tierHead{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.tierName{font-weight:850;color:white}
+.free{font-size:12px;color:#d7c4ff;background:#2a1b42;border:1px solid #453064;border-radius:999px;padding:5px 8px}
+.big{font-size:28px;font-weight:900;letter-spacing:-1px;margin:10px 0 2px;color:white}
+.sub{font-size:12px;color:var(--muted)}
+.slot{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line);font-size:13px}
+.slot:first-of-type{margin-top:10px}
+.slotName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.time{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#d9c7ff}
+.empty{padding:18px 4px;color:var(--muted);font-size:13px;text-align:center}
+.statusbar{display:flex;align-items:center;gap:9px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 4px rgba(93,84,120,.12)}
+.dot.on{background:var(--purple);box-shadow:0 0 0 4px rgba(168,85,247,.14)}
+.log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre-wrap;max-height:220px;overflow:auto;background:#08050c;border:1px solid var(--line);border-radius:12px;padding:12px;line-height:1.55}
+.footer{color:var(--dim);font-size:11px;text-align:center;margin-top:16px}
+@media(max-width:540px){.stats,.row{grid-template-columns:1fr}.logo{font-size:26px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="logo">ODY <span>LOCAL</span></div>
+    <div class="badge">Odyssey live sync</div>
+  </div>
+
+  <div class="card">
+    <h2>Panel status text</h2>
+    <textarea id="src" spellcheck="false" placeholder="Paste the slot/status panel text here, for example:
+
+FARMER 2 / 4
+@user1 - expires in 18 minutes
+@user2 - expires in 1 hour 5 minutes
+
+PRO 1 / 3
+@user3 - expires in 42 minutes"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="parseBtn">Parse Status</button>
+      <button class="secondary" id="demoBtn">Load Demo</button>
+    </div>
+    <div class="hint" style="margin-top:10px">Discord status is synced automatically from the embedded Odyssey channel. No Discord cookie or token is read or exported.</div>
+  </div>
+
+  <div class="card">
+    <div class="statusbar">
+      <div class="dot" id="watchDot"></div>
+      <div>
+        <h2 style="margin:0">Local watcher</h2>
+        <div class="hint" id="watchText">Waiting for status text</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="watchBtn">Start Watcher</button>
+      <button class="secondary" id="stopBtn">Stop</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Slots</h2>
+    <div class="stats" id="stats">
+      <div class="empty" style="grid-column:1/-1">No parsed status yet.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Activity</h2>
+    <div class="log" id="log">Ready.</div>
+    <button class="danger" id="clearBtn" style="width:100%;margin-top:10px">Clear</button>
+  </div>
+
+  <div class="footer">ODY Local • embedded Odyssey status sync • on-device</div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const MULT = {second:1, minute:60, hour:3600, day:86400};
+  let tiers = {};
+  let timer = null;
+  let watching = false;
+  let notified = new Set();
+
+  function log(msg){
+    const d = new Date();
+    $('log').textContent += `\n[${d.toLocaleTimeString()}] ${msg}`;
+    $('log').scrollTop = $('log').scrollHeight;
+  }
+
+  function durationSeconds(text){
+    let total = 0, found = false;
+    const re = /(\d+)\s*(second|minute|hour|day)s?/gi;
+    for (const m of text.matchAll(re)){
+      total += Number(m[1]) * MULT[m[2].toLowerCase()];
+      found = true;
+    }
+    return found ? total : null;
+  }
+
+  function parseStatus(text){
+    const out = {};
+    let current = null;
+    for (const raw of text.split(/\r?\n/)){
+      const line = raw.trim();
+      if (!line) continue;
+      const head = line.match(/\b(FARMER|PRO)\b[^\n]*?(\d+)\s*\/\s*(\d+)/i);
+      if (head && !/expires/i.test(line)){
+        current = head[1].toUpperCase();
+        out[current] = {name:current, used:Number(head[2]), cap:Number(head[3]), slots:[]};
+        continue;
+      }
+      if (!current) continue;
+      const ent = line.match(/^[\s>*_`-]*@?(.+?)\s*[-–—]\s*expires?\s+in\s+(.+?)\s*$/i);
+      if (!ent) continue;
+      const secs = durationSeconds(ent[2]);
+      if (secs == null) continue;
+      out[current].slots.push({
+        name:ent[1].trim().replace(/^@/,''),
+        eta:Date.now() + secs*1000,
+        original:secs
+      });
+    }
+    return out;
+  }
+
+  function fmt(ms){
+    let sec = Math.max(0, Math.floor(ms/1000));
+    if (sec <= 0) return 'NOW';
+    const h = Math.floor(sec/3600); sec %= 3600;
+    const m = Math.floor(sec/60), s = sec%60;
+    return h ? `${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`
+             : `${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
+  }
+
+  function esc(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function render(){
+    const names = ['FARMER','PRO'].filter(n => tiers[n]);
+    if (!names.length){
+      $('stats').innerHTML = '<div class="empty" style="grid-column:1/-1">No parsed status yet.</div>';
+      return;
+    }
+    $('stats').innerHTML = names.map(name => {
+      const t = tiers[name], free = Math.max(0, t.cap-t.used);
+      const slots = [...t.slots].sort((a,b)=>a.eta-b.eta);
+      const items = slots.length ? slots.map(s =>
+        `<div class="slot"><span class="slotName">@${esc(s.name)}</span><span class="time">${fmt(s.eta-Date.now())}</span></div>`
+      ).join('') : '<div class="empty">No expiring entries found.</div>';
+      return `<div class="tier">
+        <div class="tierHead"><div class="tierName">${name}</div><div class="free">${free} free</div></div>
+        <div class="big">${t.used} / ${t.cap}</div>
+        <div class="sub">used slots</div>
+        ${items}
+      </div>`;
+    }).join('');
+  }
+
+  function tick(){
+    render();
+    if (!watching) return;
+    for (const t of Object.values(tiers)){
+      for (const s of t.slots){
+        const key = `${t.name}:${s.name}:${s.eta}`;
+        if (s.eta <= Date.now() && !notified.has(key)){
+          notified.add(key);
+          log(`${t.name} slot for @${s.name} reached its expiry time.`);
+          if (navigator.vibrate) navigator.vibrate([120,80,120]);
+        }
+      }
+    }
+  }
+
+  window.odyApplyStatus = (text) => {
+    const incoming = String(text || '').trim();
+    if (!incoming) return false;
+    if ($('src').value.trim() === incoming && Object.keys(tiers).length) return true;
+
+    $('src').value = incoming;
+    tiers = parseStatus(incoming);
+    notified.clear();
+
+    const count = Object.values(tiers).reduce((n,t)=>n+t.slots.length,0);
+    if (!Object.keys(tiers).length){
+      log('Odyssey status detected, but FARMER/PRO rows could not be parsed.');
+      $('watchText').textContent = 'Odyssey panel detected • parse failed';
+      render();
+      return false;
+    }
+
+    watching = true;
+    $('watchDot').classList.add('on');
+    $('watchText').textContent = `Odyssey live • ${count} expiring slot${count===1?'':'s'}`;
+    log(`Odyssey panel synced automatically: ${Object.keys(tiers).join(' + ')}.`);
+    render();
+    return true;
+  };
+
+  $('parseBtn').onclick = () => {
+    tiers = parseStatus($('src').value);
+    notified.clear();
+    const count = Object.values(tiers).reduce((n,t)=>n+t.slots.length,0);
+    if (!Object.keys(tiers).length){
+      log('Could not find FARMER/PRO status lines.');
+      $('watchText').textContent = 'No valid status detected';
+    } else {
+      log(`Parsed ${Object.keys(tiers).length} tier(s), ${count} expiring slot(s).`);
+      $('watchText').textContent = `${count} expiring slot${count===1?'':'s'} loaded`;
+    }
+    render();
+  };
+
+  $('demoBtn').onclick = () => {
+    $('src').value = `FARMER 2 / 4
+@demo_farmer_1 - expires in 18 minutes
+@demo_farmer_2 - expires in 1 hour 5 minutes
+
+PRO 1 / 3
+@demo_pro - expires in 42 minutes`;
+    $('parseBtn').click();
+  };
+
+  $('watchBtn').onclick = () => {
+    if (!Object.keys(tiers).length) $('parseBtn').click();
+    if (!Object.keys(tiers).length) return;
+    watching = true;
+    $('watchDot').classList.add('on');
+    $('watchText').textContent = 'Watching countdowns in this tab';
+    log('Watcher started.');
+  };
+
+  $('stopBtn').onclick = () => {
+    watching = false;
+    $('watchDot').classList.remove('on');
+    $('watchText').textContent = 'Watcher stopped';
+    log('Watcher stopped.');
+  };
+
+  $('clearBtn').onclick = () => {
+    tiers = {};
+    notified.clear();
+    watching = false;
+    $('watchDot').classList.remove('on');
+    $('src').value = '';
+    $('log').textContent = 'Ready.';
+    $('watchText').textContent = 'Waiting for status text';
+    render();
+  };
+
+  timer = setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>
