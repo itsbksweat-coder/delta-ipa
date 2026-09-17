@@ -47,40 +47,157 @@ final class RokuInfoParser: NSObject, XMLParserDelegate {
 }
 
 enum RokuDiscovery {
-    static func wifiIPv4() -> String? {
+    struct InterfaceInfo: Hashable {
+        let name: String
+        let ip: String
+        let netmask: String
+    }
+
+    struct ScanPlan {
+        let interfaces: [InterfaceInfo]
+        let candidates: [String]
+        let summary: String
+    }
+
+    private static func ipv4String(_ address: UnsafePointer<sockaddr>) -> String? {
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let result = getnameinfo(
+            address,
+            socklen_t(address.pointee.sa_len),
+            &host,
+            socklen_t(host.count),
+            nil,
+            0,
+            NI_NUMERICHOST
+        )
+        guard result == 0 else { return nil }
+        return String(cString: host)
+    }
+
+    static func privateIPv4Interfaces() -> [InterfaceInfo] {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
         defer { freeifaddrs(ifaddr) }
 
+        var results: [InterfaceInfo] = []
         var pointer: UnsafeMutablePointer<ifaddrs>? = first
 
         while let current = pointer {
             defer { pointer = current.pointee.ifa_next }
 
-            guard let address = current.pointee.ifa_addr else { continue }
-            let family = address.pointee.sa_family
-            guard family == UInt8(AF_INET) else { continue }
+            guard
+                let address = current.pointee.ifa_addr,
+                address.pointee.sa_family == UInt8(AF_INET),
+                let ip = ipv4String(address),
+                let maskAddress = current.pointee.ifa_netmask,
+                let mask = ipv4String(maskAddress)
+            else { continue }
 
-            let interfaceName = String(cString: current.pointee.ifa_name)
-            guard interfaceName == "en0" else { continue }
+            let interface = String(cString: current.pointee.ifa_name)
 
-            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            let result = getnameinfo(
-                address,
-                socklen_t(address.pointee.sa_len),
-                &hostname,
-                socklen_t(hostname.count),
-                nil,
-                0,
-                NI_NUMERICHOST
-            )
+            guard interface != "lo0", isPrivateIPv4(ip) else { continue }
 
-            if result == 0 {
-                return String(cString: hostname)
+            results.append(InterfaceInfo(name: interface, ip: ip, netmask: mask))
+        }
+
+        // Prefer Wi-Fi first, then dedupe by IP.
+        results.sort {
+            if $0.name == "en0" && $1.name != "en0" { return true }
+            if $1.name == "en0" && $0.name != "en0" { return false }
+            return $0.name < $1.name
+        }
+
+        var seen = Set<String>()
+        return results.filter { seen.insert($0.ip).inserted }
+    }
+
+    static func isPrivateIPv4(_ ip: String) -> Bool {
+        let p = ip.split(separator: ".").compactMap { Int($0) }
+        guard p.count == 4 else { return false }
+
+        if p[0] == 10 { return true }
+        if p[0] == 172 && (16...31).contains(p[1]) { return true }
+        if p[0] == 192 && p[1] == 168 { return true }
+        return false
+    }
+
+    private static func ipv4ToUInt32(_ ip: String) -> UInt32? {
+        let p = ip.split(separator: ".").compactMap { UInt32($0) }
+        guard p.count == 4, p.allSatisfy({ $0 <= 255 }) else { return nil }
+        return (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]
+    }
+
+    private static func uint32ToIPv4(_ value: UInt32) -> String {
+        "\((value >> 24) & 255).\((value >> 16) & 255).\((value >> 8) & 255).\(value & 255)"
+    }
+
+    static func makeScanPlan() -> ScanPlan {
+        let interfaces = privateIPv4Interfaces()
+        var candidates = Set<String>()
+        var descriptions: [String] = []
+
+        for info in interfaces {
+            guard
+                let ipValue = ipv4ToUInt32(info.ip),
+                let maskValue = ipv4ToUInt32(info.netmask)
+            else { continue }
+
+            let network = ipValue & maskValue
+            let broadcast = network | ~maskValue
+            let hostCount = broadcast > network ? Int(broadcast - network - 1) : 0
+
+            // Scan the real subnet when reasonably sized.
+            // For unusually large networks, scan a 2048-address window centered around the phone.
+            if hostCount > 0 && hostCount <= 2048 {
+                let first = network + 1
+                let last = broadcast - 1
+                if first <= last {
+                    for value in first...last {
+                        if value != ipValue {
+                            candidates.insert(uint32ToIPv4(value))
+                        }
+                    }
+                    descriptions.append("\(info.ip) / \(info.netmask) • \(hostCount) hosts")
+                }
+            } else {
+                let lower = max(network + 1, ipValue > 1024 ? ipValue - 1024 : network + 1)
+                let upper = min(broadcast - 1, ipValue + 1024)
+
+                if lower <= upper {
+                    for value in lower...upper {
+                        if value != ipValue {
+                            candidates.insert(uint32ToIPv4(value))
+                        }
+                    }
+                    descriptions.append("\(info.ip) / \(info.netmask) • nearby 2048 hosts")
+                }
+            }
+
+            // Also scan the phone's /24 as a fallback for odd netmask reporting.
+            let octets = info.ip.split(separator: ".")
+            if octets.count == 4 {
+                let prefix = "\(octets[0]).\(octets[1]).\(octets[2])"
+                for host in 1...254 {
+                    let candidate = "\(prefix).\(host)"
+                    if candidate != info.ip {
+                        candidates.insert(candidate)
+                    }
+                }
             }
         }
 
-        return nil
+        let summary: String
+        if interfaces.isEmpty {
+            summary = "No private Wi-Fi IPv4 address detected. Check iOS Local Network permission and Wi-Fi."
+        } else {
+            summary = descriptions.joined(separator: "\n")
+        }
+
+        return ScanPlan(
+            interfaces: interfaces,
+            candidates: candidates.sorted { $0.localizedStandardCompare($1) == .orderedAscending },
+            summary: summary
+        )
     }
 
     static func probe(ip: String) async -> RokuDevice? {
@@ -90,16 +207,21 @@ enum RokuDiscovery {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 1.0
+        request.timeoutInterval = 0.9
+        request.cachePolicy = .reloadIgnoringLocalCacheData
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+
             guard let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode) else {
                 return nil
             }
 
             let values = RokuInfoParser.parse(data)
+
+            // Roku ECP device-info contains one or more of these fields.
+            guard !values.isEmpty else { return nil }
 
             let name =
                 values["user-device-name"] ??
@@ -108,7 +230,11 @@ enum RokuDiscovery {
                 values["model-name"] ??
                 "Roku TV"
 
-            let model = values["model-name"] ?? values["model-number"] ?? "Roku"
+            let model =
+                values["model-name"] ??
+                values["model-number"] ??
+                values["vendor-name"] ??
+                "Roku"
 
             return RokuDevice(ip: ip, name: name, model: model)
         } catch {
@@ -116,24 +242,23 @@ enum RokuDiscovery {
         }
     }
 
-    static func discover() async -> [RokuDevice] {
-        guard let localIP = wifiIPv4() else { return [] }
+    static func discover(progress: @escaping @Sendable (Int, Int) async -> Void) async -> (devices: [RokuDevice], plan: ScanPlan) {
+        let plan = makeScanPlan()
+        guard !plan.candidates.isEmpty else {
+            return ([], plan)
+        }
 
-        let parts = localIP.split(separator: ".")
-        guard parts.count == 4 else { return [] }
+        var found = Set<RokuDevice>()
+        let total = plan.candidates.count
+        var completed = 0
 
-        let prefix = "\(parts[0]).\(parts[1]).\(parts[2])"
-        var found: [RokuDevice] = []
+        // Limit concurrency to avoid iOS throttling hundreds of simultaneous local HTTP requests.
+        for batchStart in stride(from: 0, to: total, by: 48) {
+            let batchEnd = min(batchStart + 48, total)
+            let batch = Array(plan.candidates[batchStart..<batchEnd])
 
-        // Scan in small batches so iOS does not open hundreds of sockets at once.
-        for batchStart in stride(from: 1, through: 254, by: 32) {
-            let batchEnd = min(batchStart + 31, 254)
-
-            let batchResults = await withTaskGroup(of: RokuDevice?.self, returning: [RokuDevice].self) { group in
-                for host in batchStart...batchEnd {
-                    let candidate = "\(prefix).\(host)"
-                    if candidate == localIP { continue }
-
+            let results = await withTaskGroup(of: RokuDevice?.self, returning: [RokuDevice].self) { group in
+                for candidate in batch {
                     group.addTask {
                         await probe(ip: candidate)
                     }
@@ -148,18 +273,24 @@ enum RokuDiscovery {
                 return devices
             }
 
-            found.append(contentsOf: batchResults)
+            for device in results {
+                found.insert(device)
+            }
+
+            completed = batchEnd
+            await progress(completed, total)
         }
 
-        return Array(Set(found)).sorted {
+        let sorted = found.sorted {
             if $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedSame {
                 return $0.ip.localizedStandardCompare($1.ip) == .orderedAscending
             }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+
+        return (sorted, plan)
     }
 }
-
 @MainActor
 final class RokuRemoteModel: ObservableObject {
     @Published var ipAddress = UserDefaults.standard.string(forKey: "rokuIP") ?? ""
@@ -168,6 +299,8 @@ final class RokuRemoteModel: ObservableObject {
     @Published var connected = false
     @Published var discoveredDevices: [RokuDevice] = []
     @Published var isScanning = false
+    @Published var scanDetails = "Not scanned yet"
+    @Published var scanProgress = ""
 
     private var root: URL? {
         let raw = ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -190,19 +323,32 @@ final class RokuRemoteModel: ObservableObject {
 
         isScanning = true
         discoveredDevices = []
+        scanProgress = ""
         status = "Searching for Roku TVs…"
 
+        let plan = RokuDiscovery.makeScanPlan()
+        scanDetails = plan.summary
+
         Task {
-            let devices = await RokuDiscovery.discover()
-            self.discoveredDevices = devices
+            let result = await RokuDiscovery.discover { completed, total in
+                await MainActor.run {
+                    self.scanProgress = "Checked \(completed) of \(total) addresses"
+                }
+            }
+
+            self.discoveredDevices = result.devices
+            self.scanDetails = result.plan.summary
             self.isScanning = false
 
-            if devices.isEmpty {
+            if result.devices.isEmpty {
                 self.status = "No Roku TVs found"
-            } else if devices.count == 1 {
+                self.scanProgress = "Nothing answered on Roku port 8060"
+            } else if result.devices.count == 1 {
                 self.status = "Found 1 TV"
+                self.scanProgress = "Scan complete"
             } else {
-                self.status = "Found \(devices.count) TVs"
+                self.status = "Found \(result.devices.count) TVs"
+                self.scanProgress = "Scan complete"
             }
         }
     }
@@ -522,6 +668,18 @@ struct ContentView: View {
                         }
                         .disabled(model.isScanning)
 
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(model.scanDetails)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+
+                            if !model.scanProgress.isEmpty {
+                                Text(model.scanProgress)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
                         if !model.discoveredDevices.isEmpty {
                             ForEach(model.discoveredDevices) { device in
                                 Button {
@@ -569,6 +727,12 @@ struct ContentView: View {
                             model.selectedName = ""
                             model.test()
                         }
+                    }
+
+                    Section("If scan finds nothing") {
+                        Text("On iPhone: Settings → Privacy & Security → Local Network → turn this app ON.")
+                        Text("Make sure the iPhone and TV are on the same Wi-Fi, not a guest network.")
+                        Text("On Roku: Settings → System → Advanced system settings → Control by mobile apps → Enabled.")
                     }
 
                     Section("TCL Roku TV setup") {
