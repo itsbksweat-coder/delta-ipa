@@ -1,0 +1,39 @@
+name: Build TCL Roku Remote IPA
+
+on:
+  push:
+    branches:
+      - roku-remote-build
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build ARM64 iPhone app
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          APP="$GITHUB_WORKSPACE/build/Payload/TCLRokuRemote.app"
+          mkdir -p "$APP"
+          cp roku-remote/Info.plist "$APP/Info.plist"
+
+          xcrun swiftc             -swift-version 5             -parse-as-library             -sdk "$SDK"             -target arm64-apple-ios16.0             -framework SwiftUI             -framework UIKit             -framework Foundation             roku-remote/main.swift             -o "$APP/TCLRokuRemote"
+
+          chmod +x "$APP/TCLRokuRemote"
+          /usr/bin/plutil -lint "$APP/Info.plist"
+
+          cd "$GITHUB_WORKSPACE/build"
+          /usr/bin/zip -qry TCL-Roku-Remote-unsigned.ipa Payload
+          /bin/ls -lh TCL-Roku-Remote-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TCL-Roku-Remote-unsigned
+          path: build/TCL-Roku-Remote-unsigned.ipa
+          if-no-files-found: error
