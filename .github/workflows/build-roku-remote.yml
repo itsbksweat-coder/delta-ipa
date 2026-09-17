@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - roku-remote-build
+    paths-ignore:
+      - roku-remote/TCL-Roku-Remote-unsigned.ipa.b64
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -12,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: roku-remote-build
 
       - name: Build ARM64 iPhone app
         shell: bash
@@ -30,6 +37,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/build"
           /usr/bin/zip -qry TCL-Roku-Remote-unsigned.ipa Payload
           /bin/ls -lh TCL-Roku-Remote-unsigned.ipa
+          /usr/bin/base64 < TCL-Roku-Remote-unsigned.ipa > "$GITHUB_WORKSPACE/roku-remote/TCL-Roku-Remote-unsigned.ipa.b64"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
@@ -37,3 +45,16 @@ jobs:
           name: TCL-Roku-Remote-unsigned
           path: build/TCL-Roku-Remote-unsigned.ipa
           if-no-files-found: error
+
+      - name: Save IPA back to build branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add roku-remote/TCL-Roku-Remote-unsigned.ipa.b64
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Add built TCL Roku Remote IPA"
+          git push origin HEAD:roku-remote-build
