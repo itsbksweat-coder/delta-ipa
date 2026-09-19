@@ -1,0 +1,54 @@
+name: Build Eternal Browser IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'EternalBrowserProject.zip.b64'
+      - '.github/workflows/build-eternal-browser.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack project
+        run: |
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          data = Path('EternalBrowserProject.zip.b64').read_text().strip()
+          Path('EternalBrowserProject.zip').write_bytes(base64.b64decode(data))
+          PY
+          unzip -q EternalBrowserProject.zip
+          test -f EternalBrowserProject/EternalBrowser.xcodeproj/project.pbxproj
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Build unsigned app
+        run: |
+          set -euo pipefail
+          cd EternalBrowserProject
+          rm -rf build Payload EternalBrowser.ipa
+          xcodebuild             -project EternalBrowser.xcodeproj             -target EternalBrowser             -configuration Release             -sdk iphoneos             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             DEVELOPMENT_TEAM=""             CONFIGURATION_BUILD_DIR="$PWD/build"             clean build
+          test -d build/EternalBrowser.app
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          cd EternalBrowserProject
+          mkdir -p Payload
+          cp -R build/EternalBrowser.app Payload/EternalBrowser.app
+          /usr/bin/zip -qry EternalBrowser.ipa Payload
+          ls -lh EternalBrowser.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: EternalBrowser-IPA
+          path: EternalBrowserProject/EternalBrowser.ipa
+          if-no-files-found: error
